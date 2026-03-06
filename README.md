@@ -11,6 +11,10 @@
 
 # AMS HAN Home Assistant integrasjon
 
+OBS: denne versjonen er rettet mot kamstrup via mqtt hvor pakker er feilformatert eller mangler informasjon.
+Målet var at flest mulig pakker blir registrert, hvor aktiv effekt(forbruk) har prioritet.
+Alt er kodet med AI.
+
 Home Assistant integrasjon for norske og svenske strømmålere. Både DLMS og P1 fortmater støttes. Integrasjonen skal i prinsippet fungere med alle typer leserer som videresender datastrømmen fra måleren direkte ([serieport/TCP-IP](https://github.com/toreamun/amshan-homeassistant/wiki/Lesere-serieport-og-nettverk)) eller oppdelt som [meldinger til MQTT](https://github.com/toreamun/amshan-homeassistant/wiki/Lesere-MQTT). Noen aktuelle lesere er:
 | Leser | stream/MQTT | DLMS/P1 |Land|
 | ------------------------------------------------------------------------------------------------- | ----------- | ---------- |--|

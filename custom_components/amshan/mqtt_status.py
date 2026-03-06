@@ -88,10 +88,10 @@ class MqttBridgeStatusSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device info for the bridge."""
+        """Return device info aligned with meter sensors for this entry."""
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{self._config_entry.entry_id}_bridge")},
-            name="AMS HAN Bridge",
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name="AMS HAN Meter",
             manufacturer="Tibber",
             model="Pulse",
         )

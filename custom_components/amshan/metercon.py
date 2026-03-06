@@ -210,8 +210,9 @@ def get_meter_message(
     # Also try raw binary payload as DLMS when it was not parseable as HDLC.
     if _is_hex_string(payload):
         payload = _hex_payload_to_binary(payload)
-    if len(payload) >= 10:
-        return han_type.DlmsMessage(payload)
+    normalized_payload = _normalize_dlms_payload(payload)
+    if len(normalized_payload) >= 10:
+        return han_type.DlmsMessage(normalized_payload)
     return None
 
 
@@ -289,3 +290,25 @@ def _hex_payload_to_binary(payload: str | bytes) -> bytes:
         return bytes.fromhex(payload)
     msg = f"Unsupported payload type: {type(payload)}"
     raise ValueError(msg)
+
+
+def _normalize_dlms_payload(payload: bytes) -> bytes:
+    """Normalize unframed DLMS payload from bridges.
+
+    Bridges sometimes deliver raw DLMS bytes with trailing HDLC end delimiter,
+    and occasionally include trailing FCS before the delimiter. Strip these
+    markers when present so the DLMS decoder sees only DLMS content.
+    """
+    if not payload:
+        return payload
+
+    had_trailing_flag = payload.endswith(b"\x7e")
+    if had_trailing_flag:
+        payload = payload[:-1]
+
+    # If payload appears to end with 16-bit FCS bytes from HDLC, strip them.
+    # This catches common "DLMS-with-HDLC-tail" fragments from MQTT bridges.
+    if had_trailing_flag and payload.startswith(b"\x00\x00\x00\x00") and len(payload) >= 12:
+        payload = payload[:-2]
+
+    return payload

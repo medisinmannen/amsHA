@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -51,6 +52,25 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
+
+PARTIAL_DLMS_OBIS_MAP: dict[bytes, str] = {
+    b"\x01\x07\x00\xff": obis_map.FIELD_ACTIVE_POWER_IMPORT,
+    b"\x02\x07\x00\xff": obis_map.FIELD_ACTIVE_POWER_EXPORT,
+    b"\x03\x07\x00\xff": obis_map.FIELD_REACTIVE_POWER_IMPORT,
+    b"\x04\x07\x00\xff": obis_map.FIELD_REACTIVE_POWER_EXPORT,
+    b"\x1f\x07\x00\xff": obis_map.FIELD_CURRENT_L1,
+    b"\x33\x07\x00\xff": obis_map.FIELD_CURRENT_L2,
+    b"\x47\x07\x00\xff": obis_map.FIELD_CURRENT_L3,
+    b"\x20\x07\x00\xff": obis_map.FIELD_VOLTAGE_L1,
+    b"\x34\x07\x00\xff": obis_map.FIELD_VOLTAGE_L2,
+    b"\x48\x07\x00\xff": obis_map.FIELD_VOLTAGE_L3,
+    b"\x00\x00\x05\xff": obis_map.FIELD_METER_ID,
+    b"\x60\x01\x01\xff": obis_map.FIELD_METER_TYPE_ID,
+    b"\x01\x08\x00\xff": obis_map.FIELD_ACTIVE_POWER_IMPORT_TOTAL,
+    b"\x02\x08\x00\xff": obis_map.FIELD_ACTIVE_POWER_EXPORT_TOTAL,
+    b"\x03\x08\x00\xff": obis_map.FIELD_REACTIVE_POWER_IMPORT_TOTAL,
+    b"\x04\x08\x00\xff": obis_map.FIELD_REACTIVE_POWER_EXPORT_TOTAL,
+}
 
 
 @dataclass(frozen=True)
@@ -450,14 +470,7 @@ class AmsHanEntity(SensorEntity):
 
         return DeviceInfo(
             name=f"{manufacturer} {meter_type}",
-            identifiers={
-                (
-                    DOMAIN,
-                    self._meter_info.unique_id
-                    if self._meter_info.unique_id
-                    else self._config_entry_id,
-                )
-            },
+            identifiers={(DOMAIN, self._config_entry_id)},
             manufacturer=manufacturer,
             model=meter_type,
             sw_version=self._meter_info.list_version_id,
@@ -596,19 +609,130 @@ class MeterMeasureProcessor:
                     _LOGGER.debug("Decoded meter message: %s", decoded_measure)
                     return decoded_measure
 
+                partial_decoded = self._decode_partial_dlms_message(message)
+                if partial_decoded:
+                    _LOGGER.debug(
+                        "Recovered partial meter message with keys: %s",
+                        sorted(partial_decoded.keys()),
+                    )
+                    return partial_decoded
+
                 raw_hex = message.as_bytes.hex() if message.as_bytes else ""
                 _LOGGER.warning(
-                    "Could not decode meter message (length %d bytes)",
+                    "Could not decode meter message (length %d bytes): %s",
                     len(message.as_bytes) if message.as_bytes else 0,
+                    raw_hex,
                 )
-                _LOGGER.debug("Could not decode meter message: %s", raw_hex)
             except Exception:  # pylint: disable=broad-except
+                partial_decoded = self._decode_partial_dlms_message(message)
+                if partial_decoded:
+                    _LOGGER.debug(
+                        "Recovered partial meter message after decoder exception with keys: %s",
+                        sorted(partial_decoded.keys()),
+                    )
+                    return partial_decoded
+
                 raw_hex = message.as_bytes.hex() if message.as_bytes else ""
                 _LOGGER.exception(
-                    "Exception when decoding meter message (length %d bytes)",
+                    "Exception when decoding meter message (length %d bytes): %s",
                     len(message.as_bytes) if message.as_bytes else 0,
+                    raw_hex,
                 )
-                _LOGGER.debug("Exception for meter message: %s", raw_hex)
+
+    def _decode_partial_dlms_message(
+        self, message: han_type.MeterMessageBase
+    ) -> dict[str, str | int | float | dt.datetime] | None:
+        """Recover key OBIS values from truncated DLMS payload.
+
+        Some MQTT bridges publish payload fragments that lose HDLC framing
+        and parts of the DLMS preamble, but still contain OBIS/value tuples.
+        Parse those tuples directly as a best-effort fallback.
+        """
+        if not isinstance(message, han_type.DlmsMessage) or not message.as_bytes:
+            return None
+
+        payload = message.as_bytes
+        if payload.endswith(b"\x7e"):
+            payload = payload[:-1]
+
+        parsed: dict[str, str | int | float | dt.datetime] = {}
+        idx = 0
+        while True:
+            idx = payload.find(b"\x09\x06\x01\x01", idx)
+            if idx < 0 or (idx + 8) > len(payload):
+                break
+
+            obis_code = payload[idx + 4 : idx + 8]
+            value_start = idx + 8
+            if value_start >= len(payload):
+                break
+
+            tag = payload[value_start]
+            value: str | int | None = None
+            next_idx = value_start + 1
+
+            if tag == 0x06 and (value_start + 5) <= len(payload):
+                value = int.from_bytes(
+                    payload[value_start + 1 : value_start + 5], "big", signed=False
+                )
+                next_idx = value_start + 5
+            elif tag == 0x12 and (value_start + 3) <= len(payload):
+                value = int.from_bytes(
+                    payload[value_start + 1 : value_start + 3], "big", signed=False
+                )
+                next_idx = value_start + 3
+            elif tag == 0x0A and (value_start + 2) <= len(payload):
+                text_len = payload[value_start + 1]
+                text_end = value_start + 2 + text_len
+                if text_end <= len(payload):
+                    value = payload[value_start + 2 : text_end].decode(
+                        "ascii", errors="ignore"
+                    )
+                    next_idx = text_end
+
+            key = PARTIAL_DLMS_OBIS_MAP.get(obis_code)
+            if key and value is not None:
+                parsed[key] = value
+
+            idx = next_idx
+
+        # Require at least active power import as minimum meaningful reading.
+        if obis_map.FIELD_ACTIVE_POWER_IMPORT not in parsed:
+            return None
+
+        # Fill in meter ID from a previous successful decode if the fragment
+        # was cut before the meter serial OBIS entry.
+        if obis_map.FIELD_METER_ID not in parsed:
+            if self._meter_info and self._meter_info.meter_id:
+                parsed[obis_map.FIELD_METER_ID] = self._meter_info.meter_id
+            else:
+                return None
+
+        # Fill in manufacturer/type from fragment regex, then fall back to meter_info.
+        if obis_map.FIELD_METER_MANUFACTURER not in parsed:
+            model_match = re.search(rb"([A-Za-z0-9]+)_([A-Za-z0-9]+)", payload)
+            if model_match:
+                parsed[obis_map.FIELD_METER_MANUFACTURER] = model_match.group(
+                    1
+                ).decode("ascii", errors="ignore")
+                parsed[obis_map.FIELD_METER_TYPE] = model_match.group(2).decode(
+                    "ascii", errors="ignore"
+                )
+            elif self._meter_info:
+                if self._meter_info.manufacturer:
+                    parsed[obis_map.FIELD_METER_MANUFACTURER] = (
+                        self._meter_info.manufacturer
+                    )
+                if self._meter_info.type:
+                    parsed[obis_map.FIELD_METER_TYPE] = self._meter_info.type
+
+        if self._meter_info is None and (
+            obis_map.FIELD_METER_MANUFACTURER not in parsed
+            or obis_map.FIELD_METER_TYPE not in parsed
+        ):
+            return None
+
+        return parsed
 
     def _update_entities(
         self, measure_data: dict[str, str | int | float | dt.datetime]
