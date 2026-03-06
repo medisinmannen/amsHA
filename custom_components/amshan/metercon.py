@@ -6,20 +6,10 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from han import (
-    common as han_type,
-)
-from han import (
-    dlde,
-    hdlc,
-    meter_connection,
-)
-from han import (
-    serial_connection_factory as han_serial,
-)
-from han import (
-    tcp_connection_factory as han_tcp,
-)
+from han import common as han_type
+from han import dlde, hdlc, meter_connection
+from han import serial_connection_factory as han_serial
+from han import tcp_connection_factory as han_tcp
 from homeassistant.components import mqtt
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
@@ -40,7 +30,6 @@ from .const import (
 if TYPE_CHECKING:
     import asyncio
     from collections.abc import Mapping
-
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -86,7 +75,6 @@ def get_connection_factory(
             dsrdtr=config[CONF_SERIAL_DSRDTR],
         )
 
-    # select tcp or serial connection factory
     return (
         tcp_connection_factory if CONF_TCP_HOST in config else serial_connection_factory
     )
@@ -145,9 +133,6 @@ def get_meter_message(
     mqtt_message: mqtt.models.ReceiveMessage,
 ) -> han_type.MeterMessageBase | None:
     """Get frame information part from mqtt message."""
-    # Try first to read as HDLC-frame.
-
-    # payload should always be bytes when encoding is None in async_subscribe
     payload: bytes = mqtt_message.payload  # type: ignore[attr-defined]
     message = _try_read_meter_message(payload)
     if message is not None:
@@ -159,13 +144,11 @@ def get_meter_message(
                     payload.hex(),
                 )
                 return message
-
             _LOGGER.debug(
                 "Got invalid P1 message from topic %s: %s",
                 mqtt_message.topic,
                 payload.hex(),
             )
-
             return None
 
         if message.is_valid:
@@ -179,7 +162,6 @@ def get_meter_message(
                     payload.hex(),
                 )
                 return message
-
             _LOGGER.debug(
                 (
                     "Got empty frame of expected length with correct "
@@ -188,6 +170,15 @@ def get_meter_message(
                 mqtt_message.topic,
                 payload.hex(),
             )
+
+        # Invalid HDLC frame (e.g. wrong FCS) but we may still have usable
+        # DLMS payload - pass it to the decoder for a decode attempt
+        if not message.is_valid and message.payload and len(message.payload) >= 10:
+            _LOGGER.debug(
+                "Got invalid HDLC frame but trying DLMS decode of payload from topic %s",
+                mqtt_message.topic,
+            )
+            return han_type.DlmsMessage(message.payload)
 
         _LOGGER.debug(
             "Got invalid frame from topic %s: %s",
@@ -214,11 +205,14 @@ def get_meter_message(
         payload.hex(),
     )
 
-    # Try message containing DLMS (binary) message without HDLC framing
-    # Some bridges encode the binary data as hex string, and this must be decoded
+    # Try message containing DLMS (binary) message without HDLC framing.
+    # Some bridges encode the binary data as hex string, and this must be decoded.
+    # Also try raw binary payload as DLMS when it was not parseable as HDLC.
     if _is_hex_string(payload):
         payload = _hex_payload_to_binary(payload)
-    return han_type.DlmsMessage(payload)
+    if len(payload) >= 10:
+        return han_type.DlmsMessage(payload)
+    return None
 
 
 def _try_read_meter_message(payload: bytes) -> han_type.MeterMessageBase | None:
@@ -233,15 +227,16 @@ def _try_read_meter_message(payload: bytes) -> han_type.MeterMessageBase | None:
         use_octet_stuffing=False, use_abort_sequence=False
     )
 
-    # Reader expects flag sequence in start and end.
-    flag_seqeuence = hdlc.HdlcFrameReader.FLAG_SEQUENCE.to_bytes(1, byteorder="big")
-    if not payload.startswith(flag_seqeuence):
-        frame_reader.read(flag_seqeuence)
-
+    flag_sequence = hdlc.HdlcFrameReader.FLAG_SEQUENCE.to_bytes(1, byteorder="big")
+    if not payload.startswith(flag_sequence):
+        first_flag = payload.find(flag_sequence[0:1])
+        if first_flag >= 0:
+            payload = payload[first_flag:]
+        else:
+            frame_reader.read(flag_sequence)
     frames = frame_reader.read(payload)
     if len(frames) == 0:
-        # add flag sequence to the end
-        frames = frame_reader.read(flag_seqeuence)
+        frames = frame_reader.read(flag_sequence)
 
     if len(frames) > 0:
         return frames[0]

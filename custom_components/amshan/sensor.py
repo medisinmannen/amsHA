@@ -56,16 +56,9 @@ class AmsHanSensorEntityDescription(SensorEntityDescription):
     """A class that describes sensor entities."""
 
     scale: float | None = None
-    """Scaling, if any, to be done one the measured value to be in correct unit."""
-
     decimals: int | None = None
-    """Specify a number to round the measure source value to that number of decimals."""
-
     use_configured_scaling: bool = False
-    """Use custom configured scaling."""
-
     is_hour_sensor: bool = False
-    """Is the sensor updated only each hour."""
 
 
 SENSOR_TYPES: dict[str, AmsHanSensorEntityDescription] = {
@@ -264,7 +257,6 @@ async def async_setup_entry(
         config_entry.runtime_data.integration.measure_queue,
     )
 
-    # start processing loop task
     config_entry.runtime_data.integration.add_task(
         hass.loop.create_task(processor.async_process_measures_loop())
     )
@@ -275,7 +267,7 @@ async def async_setup_entry(
 class AmsHanEntity(SensorEntity):
     """Representation of a AmsHan sensor."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         entity_description: AmsHanSensorEntityDescription,
         measure_data: dict[str, str | int | float | dt.datetime],
@@ -349,7 +341,6 @@ class AmsHanEntity(SensorEntity):
                     )
                 self.async_write_ha_state()
 
-        # subscribe to update events for this meter
         self._async_remove_dispatcher = dispatcher.async_dispatcher_connect(
             self.hass,
             self._new_measure_signal_name,
@@ -454,7 +445,7 @@ class AmsHanEntity(SensorEntity):
 class AmsHanHourlyEntity(AmsHanEntity, restore_state.RestoreEntity):
     """Representation of a AmsHan sensor each hour."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         entity_description: AmsHanSensorEntityDescription,
         measure_data: dict[str, str | int | float | dt.datetime],
@@ -495,7 +486,7 @@ class AmsHanHourlyEntity(AmsHanEntity, restore_state.RestoreEntity):
         """Return native value from current measure or cache if current hour."""
         measured_value = super().native_value
         if measured_value is not None:
-            self._restored_last_state = None  # no need for restored state anymore
+            self._restored_last_state = None
             return measured_value
 
         if self._restored_last_state:
@@ -575,7 +566,6 @@ class MeterMeasureProcessor:
         while True:
             message = await self._measure_queue.get()
             if isinstance(message, StopMessage):
-                # stop signal reveived
                 return {}
 
             try:
@@ -584,22 +574,25 @@ class MeterMeasureProcessor:
                     _LOGGER.debug("Decoded meter message: %s", decoded_measure)
                     return decoded_measure
 
+                raw_hex = message.as_bytes.hex() if message.as_bytes else ""
                 _LOGGER.warning(
-                    "Could not decode meter message: %s",
-                    message.as_bytes.hex() if message.as_bytes else b"",
+                    "Could not decode meter message (length %d bytes)",
+                    len(message.as_bytes) if message.as_bytes else 0,
                 )
+                _LOGGER.debug("Could not decode meter message: %s", raw_hex)
             except Exception:  # pylint: disable=broad-except
+                raw_hex = message.as_bytes.hex() if message.as_bytes else ""
                 _LOGGER.exception(
-                    "Exception when decoding meter message: %s",
-                    message.as_bytes.hex() if message.as_bytes else b"",
+                    "Exception when decoding meter message (length %d bytes)",
+                    len(message.as_bytes) if message.as_bytes else 0,
                 )
+                _LOGGER.debug("Exception for meter message: %s", raw_hex)
 
     def _update_entities(
         self, measure_data: dict[str, str | int | float | dt.datetime]
     ) -> None:
         self._ensure_entities_are_created(measure_data)
 
-        # signal all entities to update with new measure data
         if self._known_measures:
             if self._new_measure_signal_name is None:
                 _LOGGER.debug("New measure signal name is not set. Unexpected")
@@ -611,14 +604,10 @@ class MeterMeasureProcessor:
     def _ensure_entities_are_created(
         self, measure_data: dict[str, str | int | float | dt.datetime]
     ) -> None:
-        # Norwegian short message does not have enough data to register
-        # entities with unique_id. Check for voltage to detect if this
-        # is not a short message
         if obis_map.FIELD_VOLTAGE_L1 in measure_data:
             missing_measures = measure_data.keys() - self._known_measures
 
             if missing_measures:
-                # Add hourly sensors before measurement is available to avoid long delay
                 hour_sensors = {
                     s.key for s in SENSOR_TYPES.values() if s.is_hour_sensor
                 }

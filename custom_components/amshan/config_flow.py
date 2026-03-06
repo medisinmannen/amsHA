@@ -36,7 +36,7 @@ from .const import (
     CONF_SERIAL_XONXOFF,
     CONF_TCP_HOST,
     CONF_TCP_PORT,
-    DOMAIN,  # pylint: disable=unused-import
+    DOMAIN,
     HOSTNAME_IP4_IP6_REGEX,
 )
 from .metercon import get_connection_factory, get_meter_message
@@ -46,19 +46,9 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-
-# max number of frames to search for needed meter information
-# Some meters sends 3 frames containing minimal of data between larger frames. Skip.
-# Some frames may be abortet correctly. Add some for that.
-# A max count of 4 should be the normal situation, but a little more is more robust.
 MAX_FRAME_SEARCH_COUNT = 6
-
-# Kamstrup sends data frame every 10 sec. Aidon every 2.5 sec. Kaifa evry 2 sec.
 MAX_FRAME_WAIT_TIME = 12
 
-# Error codes
-# Use the key base if you want to show an error unrelated to a specific field.
-# The specified errors need to refer to a key in a translation file.
 VALIDATION_ERROR_BASE = "base"
 VALIDATION_ERROR_CONNECT = "cannot_connect"
 VALIDATION_ERROR_TIMEOUT_CONNECT = "timeout_connect"
@@ -127,11 +117,9 @@ class AmsHanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if entry_result:
                 return entry_result
         else:
-            # set defaults
             port = await self.hass.async_add_executor_job(
                 self._try_get_first_available_serial
             )
-
             user_input = {
                 CONF_SERIAL_PORT: port if port else "",
                 CONF_SERIAL_BAUDRATE: 2400,
@@ -158,10 +146,10 @@ class AmsHanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): vol.In(["N", "E", "O"]),
                     vol.Optional(
                         CONF_SERIAL_BYTESIZE, default=user_input[CONF_SERIAL_BYTESIZE]
-                    ): vol.In(["5", "6", "7", "8"]),  # use string as workaround gui bug
+                    ): vol.In(["5", "6", "7", "8"]),
                     vol.Optional(
                         CONF_SERIAL_STOPBITS, default=user_input[CONF_SERIAL_STOPBITS]
-                    ): vol.In(["1", "1.5", "2"]),  # use string as workaround gui bug
+                    ): vol.In(["1", "1.5", "2"]),
                     vol.Optional(
                         CONF_SERIAL_XONXOFF, default=user_input[CONF_SERIAL_XONXOFF]
                     ): cv.boolean,
@@ -187,7 +175,6 @@ class AmsHanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if entry_result:
                 return entry_result
         else:
-            # set defaults
             user_input = {
                 CONF_TCP_HOST: "",
                 CONF_TCP_PORT: None,
@@ -219,7 +206,6 @@ class AmsHanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if entry_result:
                 return entry_result
         else:
-            # set defaults
             user_input = {
                 CONF_MQTT_TOPICS: "",
             }
@@ -239,14 +225,13 @@ class AmsHanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _async_try_create_entry(
         self, connection_type: ConnectionType, user_input: dict[str, Any]
     ) -> ConfigFlowResult | None:
-        config = dict(user_input)  # create a copy to be able to make changes
+        config = dict(user_input)
         if connection_type == ConnectionType.SERIAL:
             config[CONF_SERIAL_BYTESIZE] = int(config[CONF_SERIAL_BYTESIZE])
             config[CONF_SERIAL_STOPBITS] = float(config[CONF_SERIAL_STOPBITS])
         elif connection_type == ConnectionType.NETWORK:
             config[CONF_TCP_PORT] = int(config[CONF_TCP_PORT])
         elif connection_type == ConnectionType.MQTT:
-            # strip empty elements
             topics = [
                 x.strip() for x in config[CONF_MQTT_TOPICS].split(",") if x.strip()
             ]
@@ -292,15 +277,13 @@ class AmsHanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     def _try_get_first_available_serial() -> str | None:
         by_id = "/dev/serial/by-id"
-        if not Path(by_id).is_dir:
+        if not Path(by_id).is_dir():
             return None
 
         for device in (entry.path for entry in os.scandir(by_id) if entry.is_symlink()):
             try:
-                # Open to test if port is available...
                 port = serial.Serial(device)
             except serial.SerialException:
-                # It has some error, skip this one
                 continue
             else:
                 port.close()
@@ -317,11 +300,7 @@ class ConfigFlowValidation:
         self.errors: dict[str, Any] = {}
 
     def _set_base_error(self, error_key: str) -> None:
-        """
-        Show an error unrelated to a specific field.
-
-        :param error_key: error key that needs to refer to a key in a translation file.
-        """
+        """Set base error."""
         self.errors[VALIDATION_ERROR_BASE] = error_key
 
     async def _async_get_meter_info(
@@ -341,7 +320,7 @@ class ConfigFlowValidation:
                     ):
                         return MeterInfo.from_measure_data(decoded_measure)
 
-                    _LOGGER.debug("Decoded measure data is missing required info.")
+            _LOGGER.debug("Decoded measure data is missing required info.")
 
         raise TimeoutError
 
@@ -374,7 +353,6 @@ class ConfigFlowValidation:
                 return None
             except serial.SerialException as ex:
                 if ex.errno == errno.ENOENT:
-                    # No such file or directory
                     self._set_base_error(VALIDATION_ERROR_SERIAL_EXCEPTION_ERRNO_2)
                     _LOGGER.debug(
                         "Serial exception when connecting to HAN-port: %s", ex
@@ -390,15 +368,15 @@ class ConfigFlowValidation:
                     type(ex).__name__,
                 )
 
-            except Exception:
-                _LOGGER.exception("Unexpected error connecting to HAN-port")
-                raise
+        except Exception:
+            _LOGGER.exception("Unexpected error connecting to HAN-port")
+            raise
 
-            try:
-                return await self._async_get_meter_info(measure_queue)
-            except TimeoutError:
-                self._set_base_error(VALIDATION_ERROR_TIMEOUT_READ_MESSAGE)
-                return None
+        try:
+            return await self._async_get_meter_info(measure_queue)
+        except TimeoutError:
+            self._set_base_error(VALIDATION_ERROR_TIMEOUT_READ_MESSAGE)
+            return None
         finally:
             if transport:
                 transport.close()
@@ -410,7 +388,6 @@ class ConfigFlowValidation:
 
         @callback
         def message_received(mqtt_message: mqtt.models.ReceiveMessage) -> None:
-            """Handle new MQTT messages."""
             meter_message = get_meter_message(mqtt_message)
             if meter_message:
                 measure_queue.put_nowait(meter_message)
@@ -432,9 +409,7 @@ class ConfigFlowValidation:
             for ubsubscribe in unsubscibers:
                 ubsubscribe()
 
-            # workaround MQTT bug when topic is re-subscribed at setup at the same
-            # time as unsubscribe runs as a background job
-            await asyncio.sleep(1)
+        await asyncio.sleep(1)
 
     async def _async_validate_host_address(
         self, loop: asyncio.AbstractEventLoop, user_input: dict[str, Any]
@@ -553,8 +528,8 @@ class AmsHanOptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(
         self,
-        user_input: dict[str, Any] | None = None,  # noqa: ARG002
-    ) -> ConfigFlowResult:  # pylint: disable=unused-argument
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
         """Manage the options."""
         return await self.async_step_user()
 

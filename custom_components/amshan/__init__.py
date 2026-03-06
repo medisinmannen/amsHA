@@ -108,8 +108,7 @@ class AmsHanIntegration:
         self._tasks.clear()
 
     def stop_receive(self) -> None:
-        """Stop receivers (serial/tcp-ip and/or MQTT."""
-        # signal processor to exit processing loop by sending empty bytes on the queue
+        """Stop receivers (serial/tcp-ip and/or MQTT)."""
         self.measure_queue.put_nowait(StopMessage())
 
         if self._connection_manager:
@@ -128,7 +127,6 @@ async def async_setup_entry(
 
     await integration.async_setup_receiver(hass, config_entry.data)
 
-    # Listen for Home Assistant stop event
     @callback
     async def on_hass_stop(event: Event) -> None:
         _LOGGER.debug("%s received. Close down integration.", event.event_type)
@@ -138,7 +136,6 @@ async def async_setup_entry(
         hass.bus.async_listen_once(ha_const.EVENT_HOMEASSISTANT_STOP, on_hass_stop)
     )
 
-    # Listen for config entry changes and reload when changed.
     integration.add_listener(
         config_entry.add_update_listener(async_config_entry_changed)
     )
@@ -295,13 +292,6 @@ def _migrate_entries(
 ) -> None:
     ent_reg = entity_registry.async_get(hass)
 
-    # Workaround:
-    # entity_registry.async_migrate_entries fails with:
-    # RuntimeError: dictionary keys changed during iteration"
-    # Try to get all entries from the dictionary before working on them.
-    # The migration dows not directly change any keys of the registry.
-    # Concurrency problem in HA?
-
     entries = [
         entry
         for entry in ent_reg.entities.values()
@@ -353,7 +343,7 @@ class MeterInfo:
 
 
 class StopMessage(han_type.MeterMessageBase):
-    """Special message top signal stop. No more messages."""
+    """Special message to signal stop. No more messages."""
 
     @property
     def message_type(self) -> han_type.MeterMessageType:
