@@ -33,6 +33,7 @@ from homeassistant.util import dt as dt_util
 
 from . import AmsHanConfigEntry, MeterInfo, StopMessage
 from .const import (
+    CONF_CONNECTION_TYPE,
     CONF_OPTIONS_SCALE_FACTOR,
     DOMAIN,
     ICON_COUNTER,
@@ -42,6 +43,7 @@ from .const import (
     ICON_VOLTAGE,
     UNIT_KILO_VOLT_AMPERE_REACTIVE_HOURS,
 )
+from .mqtt_status import async_setup_mqtt_status_sensors
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -260,6 +262,26 @@ async def async_setup_entry(
     config_entry.runtime_data.integration.add_task(
         hass.loop.create_task(processor.async_process_measures_loop())
     )
+
+    # Add MQTT status sensors (RSSI, temperature) if using MQTT connection
+    connection_type = config_entry.data.get(CONF_CONNECTION_TYPE)
+    _LOGGER.debug("Config entry connection type: %s", connection_type)
+    if str(connection_type).lower() in {"hass_mqtt", "mqtt"}:
+        mqtt_sensors = await async_setup_mqtt_status_sensors(hass, config_entry)
+        if mqtt_sensors:
+            async_add_entities(mqtt_sensors, update_before_add=False)
+            _LOGGER.debug(
+                "Added %d MQTT status sensors (RSSI, temperature)", len(mqtt_sensors)
+            )
+        else:
+            _LOGGER.warning(
+                "MQTT connection configured, but no status sensors were created"
+            )
+    else:
+        _LOGGER.debug(
+            "Skipping MQTT status sensors because connection type is %s",
+            connection_type,
+        )
 
     _LOGGER.debug("Sensor async_setup_entry ended.")
 

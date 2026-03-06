@@ -223,17 +223,41 @@ def _try_read_meter_message(payload: bytes) -> han_type.MeterMessageBase | None:
         except ValueError as ex:
             _LOGGER.debug("Starts with '/', but not a valid P1 message: %s", ex)
 
+    # Clean payload by finding first HDLC flag (0x7e) if not at start.
+    # This removes noise/fragments at the beginning of the payload.
+    flag_sequence = hdlc.HdlcFrameReader.FLAG_SEQUENCE.to_bytes(1, byteorder="big")
+    if not payload.startswith(flag_sequence):
+        first_flag_idx = payload.find(flag_sequence[0:1])
+        if first_flag_idx > 0:
+            _LOGGER.debug(
+                "Found HDLC flag at position %d, trimming %d bytes of noise from start",
+                first_flag_idx,
+                first_flag_idx,
+            )
+            payload = payload[first_flag_idx:]
+        elif first_flag_idx < 0:
+            # No HDLC flag found. Some bridges deliver fragments with the leading
+            # 0x7E stripped; try to recover a frame by locating frame format (0xA0).
+            frame_format_idx = payload.find(b"\xa0")
+            if frame_format_idx >= 0 and payload.endswith(flag_sequence):
+                candidate = flag_sequence + payload[frame_format_idx:]
+                _LOGGER.debug(
+                    "No leading HDLC flag found; trying recovery from 0xA0 at index %d",
+                    frame_format_idx,
+                )
+                recovered = _try_read_meter_message(candidate)
+                if recovered is not None:
+                    return recovered
+
+            # No flag/recoverable frame found in binary payload.
+            if _is_hex_string(payload):
+                return _try_read_meter_message(_hex_payload_to_binary(payload))
+            return None
+
     frame_reader = hdlc.HdlcFrameReader(
         use_octet_stuffing=False, use_abort_sequence=False
     )
 
-    flag_sequence = hdlc.HdlcFrameReader.FLAG_SEQUENCE.to_bytes(1, byteorder="big")
-    if not payload.startswith(flag_sequence):
-        first_flag = payload.find(flag_sequence[0:1])
-        if first_flag >= 0:
-            payload = payload[first_flag:]
-        else:
-            frame_reader.read(flag_sequence)
     frames = frame_reader.read(payload)
     if len(frames) == 0:
         frames = frame_reader.read(flag_sequence)
